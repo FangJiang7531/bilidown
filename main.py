@@ -159,8 +159,10 @@ def cmd_selftest(args) -> int:
         "ffmpeg_ok": bool(ffmpeg),
         "ffprobe_ok": bool(ffprobe),
         "bundled": C.is_frozen(),
-        "danmaku_api_ok": len(pages) > 0,
     }
+    # 弹幕接口需要登录态才通，没配 cookies 时只作为信息上报，不计入 ok ——
+    # 否则一个不带凭证的全新克隆会被误判为"自检失败"
+    payload["danmaku_api_ok"] = len(pages) > 0
     payload["ok"] = all(payload["checks"].values())
 
     _emit(payload, args.out)

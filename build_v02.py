@@ -30,7 +30,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist_v02"
 BUILD = ROOT / "build_v02"
-FINAL = ROOT / "成品" / "v0.2"
+
+
+def _final_dir() -> Path:
+    """成品输出目录。
+
+    如果已经存在 成品*/v0.2（用户可能把「成品」改成更好懂的名字），
+    就沿用同一个位置，免得重新打包后凭空多出一个新文件夹。
+    """
+    for parent in sorted(p for p in ROOT.glob("成品*") if p.is_dir()):
+        if (parent / "v0.2").exists():
+            return parent / "v0.2"
+    return ROOT / "成品" / "v0.2"
+
+
+FINAL = _final_dir()
 
 README_TXT = """\
 ╔══════════════════════════════════════════════════════════════╗

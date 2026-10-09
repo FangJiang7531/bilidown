@@ -25,17 +25,44 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PKG = ROOT / "成品" / "v0.2"
+
+
+def find_package() -> Path:
+    """定位成品目录。
+
+    成品文件夹是给人看的，用户很可能把它改名（本机上就被改成了
+    「成品（下载该文件夹即可直接使用）」），所以这里按前缀模糊匹配，
+    并且优先选真正存在 BiliDown.exe 的那个。
+    """
+    for parent in sorted(p for p in ROOT.glob("成品*") if p.is_dir()):
+        hits = sorted(parent.glob("*/BiliDown.exe")) + sorted(parent.glob("BiliDown.exe"))
+        if hits:
+            return hits[0].parent
+    return ROOT / "成品" / "v0.2"
+
+
+PKG = find_package()
 EXE = PKG / "BiliDown.exe"
 TEST_URL = "BV1GJ411x7h7"          # 【官方 MV】Never Gonna Give You Up
 
 results: list[tuple[str, bool, str]] = []
+skipped: list[tuple[str, str]] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
     results.append((name, ok, detail))
     print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"   {detail}" if detail else ""))
     return ok
+
+
+def skip(name: str, why: str) -> None:
+    """条件不满足时标记为跳过。
+
+    仓库里刻意不带 cookies（隐私），所以全新克隆下来跑验收时，
+    凡是需要登录态才能验证的项目都会走到这里 —— 它们是 SKIP，不是 FAIL。
+    """
+    skipped.append((name, why))
+    print(f"  SKIP  {name}   {why}")
 
 
 def clean_env() -> dict:
@@ -114,16 +141,22 @@ def main() -> int:
     login = st.get("login") or {}
     check("登录状态检测可用", bool(login.get("checked")), login.get("message"))
 
-    # 回归：失效的 cookies 会反向把画质从 1080P 压到 480P，必须被自动停用
-    ignored = bool(st.get("cookies_ignored"))
-    check("失效 Cookies 已自动停用（否则画质会被压低）", ignored,
-          f"effective={st.get('cookies_effective') or '不使用'}")
+    # 下面两项只有在配置了 cookies 时才有意义
+    if st.get("cookies"):
+        # 回归：失效的 cookies 会反向把画质从 1080P 压到 480P，必须被自动停用
+        check("失效 Cookies 已自动停用（否则画质会被压低）",
+              bool(st.get("cookies_ignored")),
+              f"effective={st.get('cookies_effective') or '不使用'}")
 
-    api = st.get("api_check") or {}
-    check("弹幕 cid 接口可用（B 站风控 412 回归）",
-          int(api.get("pages") or 0) > 0,
-          f"pages={api.get('pages')} cid={api.get('first_cid')} "
-          f"{str(api.get('messages'))[:60]}")
+        api = st.get("api_check") or {}
+        check("弹幕 cid 接口可用（B 站风控 412 回归）",
+              int(api.get("pages") or 0) > 0,
+              f"pages={api.get('pages')} cid={api.get('first_cid')} "
+              f"{str(api.get('messages'))[:60]}")
+    else:
+        skip("失效 Cookies 自动停用", "未配置 cookies（仓库刻意不带凭证）")
+        skip("弹幕 cid 接口", "该接口无 cookies 会返回 412，需要有登录态才能验证")
+
     check("成品目录可写（config.json）", bool(st.get("writable_app_dir")))
     check("整体自检通过", bool(st.get("ok")))
 
@@ -158,7 +191,8 @@ def main() -> int:
                   str(jc.get("sample") or jc.get("error") or "")[:70])
         shutil.rmtree(tmpdir, ignore_errors=True)
     else:
-        check("找得到用于测试的 cookies 文件", False, str(src_ck))
+        skip("F12 手动复制 Cookie 头整组检查",
+             "成品目录里没有 cookies 文件（仓库刻意不带凭证）")
 
     # ── 3. 清晰度探测 ─────────────────────────────────────────────────
     print("\n[3/4] 真实链接清晰度探测")
@@ -185,14 +219,17 @@ def main() -> int:
         print(f"    标题: {pr.get('title')}")
         print(f"    最高可用: {pr.get('max_label')}")
 
-    # ── 3. 真实下载 ───────────────────────────────────────────────────
-    print("\n[4/4] 真实下载（最低清晰度 + 弹幕）")
+    # ── 4. 真实下载 ───────────────────────────────────────────────────
+    # 没有 cookies 就不带 --danmaku：拿 cid 的接口需要登录态，硬要只会白等
+    want_danmaku = (PKG / "www.bilibili.com_cookies.txt").exists()
+    print("\n[4/4] 真实下载（最低清晰度" + (" + 弹幕）" if want_danmaku else "）"))
     outdir = Path(tempfile.gettempdir()) / f"bilidown_pkg_test_{time.time_ns()}"
     outdir.mkdir(parents=True, exist_ok=True)
-    sel = "bestvideo[height<=360]+bestaudio/best" 
-    rc, dl, took = run_exe(
-        ["--download", TEST_URL, "--outdir", str(outdir),
-         "--selector", sel, "--danmaku"], timeout=900)
+    sel = "bestvideo[height<=360]+bestaudio/best"
+    dl_args = ["--download", TEST_URL, "--outdir", str(outdir), "--selector", sel]
+    if want_danmaku:
+        dl_args.append("--danmaku")
+    rc, dl, took = run_exe(dl_args, timeout=900)
     check("下载流程返回结果", dl is not None, took)
     if dl:
         check("下载成功", bool(dl.get("ok")), str(dl.get("error"))[:90])
@@ -220,17 +257,25 @@ def main() -> int:
                       {"video", "audio"} <= kinds,
                       ", ".join(f"{s.get('codec_type')}:{s.get('codec_name')}"
                                 for s in streams))
-        danmaku = [f for f in files if f.endswith(".danmaku.xml")]
-        check("弹幕已下载", len(danmaku) > 0)
+        if want_danmaku:
+            danmaku = [f for f in files if f.endswith(".danmaku.xml")]
+            check("弹幕已下载", len(danmaku) > 0)
+        else:
+            skip("弹幕已下载", "未配置 cookies，拿不到 cid")
 
     # ── 汇总 ──────────────────────────────────────────────────────────
     print("\n" + "=" * 64)
     passed = sum(1 for _, ok, _ in results if ok)
     failed = len(results) - passed
-    print(f"  结果: {passed} 通过 / {failed} 失败  （共 {len(results)} 项）")
+    line = f"  结果: {passed} 通过 / {failed} 失败"
+    if skipped:
+        line += f" / {len(skipped)} 跳过"
+    print(line + f"  （共 {len(results) + len(skipped)} 项）")
     for name, ok, _ in results:
         if not ok:
             print(f"    ✗ {name}")
+    for name, why in skipped:
+        print(f"    – {name}：{why}")
     print("=" * 64)
     return 0 if failed == 0 else 1
 
