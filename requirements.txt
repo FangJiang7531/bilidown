@@ -1,0 +1,12 @@
+# BiliDown 开发 / 打包依赖
+#
+# 普通用户不需要装这些 —— 直接下载 成品\v0.2 或 Releases 里的压缩包即可，
+# 那个文件夹里已经内置了 Python 运行时、yt-dlp 和 ffmpeg。
+#
+# 只有要改代码或重新打包时才需要：
+#     pip install -r requirements.txt
+#     python build_v02.py
+
+yt-dlp>=2026.8.19        # 下载核心，B 站接口变动频繁，打包前务必升级
+pyinstaller>=6.20        # 打包成 exe
+pillow>=10.0             # tools/make_icon.py 生成应用图标用
